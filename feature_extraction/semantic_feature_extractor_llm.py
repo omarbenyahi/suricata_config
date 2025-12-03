@@ -47,55 +47,65 @@ class LLMSemanticExtractor:
         if not self.client:
             return None
         
-        prompt = f"""Analyze this network security alert and extract semantic features:
+        prompt = f"""You are a cybersecurity expert. Analyze this network security alert:
 
-Alert Details:
-- Signature: {signature}
-- Category: {category}
-- Source IP: {src_ip}
-- Destination IP: {dest_ip}
-- Protocol: {proto}
-- App Protocol: {app_proto}
+Signature: {signature}
+Category: {category}
+Source IP: {src_ip}
+Destination IP: {dest_ip}
+Protocol: {proto}
+Application Protocol: {app_proto}
 
-Please analyze and provide:
-1. Threat Type (malware, exploit, scan, dos, botnet, phishing, data_exfiltration, suspicious, or benign)
-2. Severity Level (critical, high, medium, low)
-3. Attack Intent (reconnaissance, exploitation, persistence, lateral_movement, exfiltration, impact, or unknown)
-4. Target Asset Type (web_server, database, workstation, network_device, iot, cloud, or unknown)
-5. Confidence Score (0.0 to 1.0)
-6. Brief contextual description (max 100 words)
+Provide a JSON response with these exact fields (no ellipsis, use actual values):
 
-Return ONLY a valid JSON object with these fields:
-{
-  "threat_type": "...",
-  "severity_level": "...",
-  "attack_intent": "...",
-  "target_asset": "...",
-  "confidence_score": 0.0,
-  "description": "..."
-}"""
+1. threat_type: Choose ONE from: malware, exploit, scan, dos, botnet, phishing, data_exfiltration, suspicious, benign
+2. severity_level: Choose ONE from: critical, high, medium, low
+3. attack_intent: Choose ONE from: reconnaissance, exploitation, persistence, lateral_movement, exfiltration, impact, unknown
+4. target_asset: Choose ONE from: web_server, database, workstation, network_device, iot, cloud, unknown
+5. confidence_score: A number between 0.0 and 1.0
+6. description: Brief analysis in 50 words maximum
+
+IMPORTANT: Return ONLY valid JSON. No markdown, no code blocks, no ellipsis (...). Use actual values.
+
+Example format:
+{{"threat_type": "exploit", "severity_level": "high", "attack_intent": "exploitation", "target_asset": "web_server", "confidence_score": 0.85, "description": "This alert indicates a potential privilege escalation attempt through id command execution returning root access."}}"""
 
         try:
             response = self.client.chat.completions.create(
                 model="deepseek-chat",
                 messages=[
-                    {"role": "system", "content": "You are a cybersecurity expert analyzing network alerts. Respond only with valid JSON."},
+                    {"role": "system", "content": "You are a cybersecurity expert. Always respond with valid JSON only, no markdown formatting."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.3,
-                max_tokens=500
+                temperature=0.1,
+                max_tokens=300
             )
             
-            llm_output = response.choices[0].message.content
+            llm_output = response.choices[0].message.content.strip()
             
-            # استخراج JSON من الإجابة
-            json_match = re.search(r'\{.*\}', llm_output, re.DOTALL)
+            # إزالة markdown code blocks إذا وجدت
+            llm_output = llm_output.replace('``````', '').strip()
+            
+            # محاولة استخراج JSON
+            json_match = re.search(r'\{[^}]+\}', llm_output, re.DOTALL)
             if json_match:
                 llm_features = json.loads(json_match.group())
+                
+                # التحقق من عدم وجود "..."
+                for key, value in llm_features.items():
+                    if isinstance(value, str) and '...' in value:
+                        print(f"[!] LLM returned ellipsis in {key}, using fallback")
+                        return None
+                
                 return llm_features
             
+            print(f"[!] Could not extract JSON from LLM response")
             return None
             
+        except json.JSONDecodeError as e:
+            print(f"[!] JSON decode error: {e}")
+            print(f"[!] LLM Response: {llm_output[:200]}")
+            return None
         except Exception as e:
             print(f"[!] LLM Error: {e}")
             return None
@@ -169,7 +179,7 @@ Return ONLY a valid JSON object with these fields:
                 features['llm_target_asset'] = llm_features.get('target_asset', 'unknown')
                 features['llm_confidence'] = llm_features.get('confidence_score', 0.0)
                 features['llm_description'] = llm_features.get('description', '')
-                print(f"  ├─ LLM Analysis: {llm_features['threat_type']} ({llm_features['confidence_score']})")
+                print(f"  ├─ LLM Analysis: {llm_features['threat_type']} (confidence: {llm_features['confidence_score']})")
             else:
                 print(f"  ├─ LLM failed, using rule-based fallback")
         
@@ -274,6 +284,7 @@ Return ONLY a valid JSON object with these fields:
 
 if __name__ == "__main__":
     import sys
+    import os
     
     if len(sys.argv) < 2:
         print("Usage: python3 semantic_feature_extractor_llm.py <eve.json_path> [deepseek_api_key]")
@@ -287,7 +298,6 @@ if __name__ == "__main__":
     eve_json_path = sys.argv[1]
     
     # الحصول على API key
-    import os
     deepseek_api_key = None
     
     if len(sys.argv) > 2:
@@ -308,3 +318,4 @@ if __name__ == "__main__":
     )
     
     extractor.run()
+
